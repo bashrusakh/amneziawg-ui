@@ -46,7 +46,7 @@ func ShowEditor(e *env.Env, server api.Server, client *api.Client) {
 		if value := defaults[key]; value != "" {
 			entry.SetPlaceHolder(lang.L("example, generated per client: {{.Value}}", map[string]any{"Value": widgets.Truncate(value, 40)}))
 		} else {
-			entry.SetPlaceHolder(lang.L("leave empty to skip"))
+			entry.SetPlaceHolder(lang.L("leave empty to keep the generated value"))
 		}
 	}
 
@@ -74,7 +74,8 @@ func ShowEditor(e *env.Env, server api.Server, client *api.Client) {
 	iNote := widget.NewLabel(lang.L("Each value describes one packet sent before the handshake, as a sequence of tags: " +
 		"<b 0x...> static bytes, <t> a 4-byte timestamp, <r N> random bytes, <rc N> random letters, <rd N> random digits " +
 		"(N up to 1000). Example: <b 0xd100000001><rc 8><t><r 50>. These are client-only parameters, they are never " +
-		"written into the server config; empty values are skipped, and an empty I1 turns the whole set off. Keep each " +
+		"written into the server config; an empty field keeps the client's generated value, \"Apply I-settings\" " +
+		"switches the whole set on or off, and I1 is always generated. Keep each " +
 		"packet under about 1472 bytes or it is fragmented on the way out, which is the signature this is meant to avoid. " +
 		"A config that grows past the QR code limit can still be downloaded as a file."))
 	iNote.Wrapping = fyne.TextWrapWord

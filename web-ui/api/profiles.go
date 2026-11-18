@@ -17,8 +17,8 @@ type sizeRange [2]int
 // QUIC Initial, q0 for 0-RTT, tls for a TLS ClientHello, dtls for DTLS, nx
 // for a Noise_IK handshake - and a chain pads toward the row it draws:
 // traffic that always lands in one narrow size band is a signature.
-// chromium marks the rows whose TLS records are padded up to a multiple of
-// 128 on top of the drawn size, the way Chromium pads its records.
+// chromium marks the rows whose TLS records land on a multiple of 128
+// inside the slot, the way Chromium pads its records.
 type browserRow struct {
 	qi, q0, tls, dtls, nx sizeRange
 	chromium              bool
@@ -36,7 +36,7 @@ var browserRows = [3]browserRow{
 		nx: sizeRange{1200, 1250},
 	},
 	{ // Safari
-		qi: sizeRange{1250, 1252}, q0: sizeRange{1250, 1300},
+		qi: sizeRange{1250, 1252}, q0: sizeRange{1200, 1300},
 		tls: sizeRange{512, 750}, dtls: sizeRange{1100, 1200},
 		nx: sizeRange{1200, 1250},
 	},
@@ -114,13 +114,16 @@ func quicLongPacket(row browserRow, zeroRTT bool) packet {
 // tlsClientHello builds a TLS 1.3 ClientHello record (RFC 8446 §5.1, body
 // of §4.1.2): lengths cover everything after them, then the legacy version,
 // the 32-byte random, a filler standing in for the session and SNI fields,
-// and padding so the record lands on the row's tls size - rounded up to a
-// multiple of 128 for the Chromium-family rows, which pad their records that
-// way (no row: U[300,550]; every chain draws one).
+// and padding so the record lands on the row's tls size - on one of the
+// multiples of 128 inside the slot for the Chromium-family rows, which pad
+// their records that way (no row: U[300,550]; every chain draws one).
 func tlsClientHello(row browserRow) packet {
 	target := randInt(row.tls[0], row.tls[1])
 	if row.chromium {
-		target = (target + 127) / 128 * 128
+		// Draw one of the multiples of 128 inside the slot rather than
+		// rounding a draw up: past the slot's top the round would leave
+		// the measured band, which is the signature this avoids.
+		target = randInt((row.tls[0]+127)/128, row.tls[1]/128) * 128
 	}
 
 	filler := randLetters(randInt(16, 48))

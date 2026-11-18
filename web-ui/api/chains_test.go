@@ -131,8 +131,8 @@ func TestPacketsParseToTheirLastByte(t *testing.T) {
 // The size table is what the mimicry rests on: a packet that lands outside
 // the drawn row's slot for its protocol - like QUIC payloads once did, capped
 // to half the target - is itself the signature. Totals are spot-checked per
-// row across many draws; the Chromium-family rows round their TLS records up
-// to a multiple of 128, the rest land inside the slot as drawn.
+// row across many draws; the Chromium-family rows land on a multiple of 128
+// inside the slot, the rest land inside the slot as drawn.
 func TestPacketsHitTheirBrowserRowSizes(t *testing.T) {
 	for _, row := range browserRows {
 		for range 30 {
@@ -143,15 +143,36 @@ func TestPacketsHitTheirBrowserRowSizes(t *testing.T) {
 			inSlot(t, "Noise_IK", len(expand(noiseIKHandshake(row))), row.nx)
 
 			got := len(expand(tlsClientHello(row)))
-			slot := row.tls
-			if row.chromium {
-				slot = sizeRange{(row.tls[0] + 127) / 128 * 128, (row.tls[1] + 127) / 128 * 128}
-				if got%128 != 0 {
-					t.Fatalf("Chromium-family TLS ClientHello is %d bytes, want a multiple of 128", got)
-				}
+			if row.chromium && got%128 != 0 {
+				t.Fatalf("Chromium-family TLS ClientHello is %d bytes, want a multiple of 128", got)
 			}
-			inSlot(t, "TLS ClientHello", got, slot)
+			inSlot(t, "TLS ClientHello", got, row.tls)
 		}
+	}
+}
+
+// The table is pinned against the fingerprint source it is transcribed from;
+// a cell that drifts from it must fail here.
+func TestBrowserRowsMatchTheFingerprintTable(t *testing.T) {
+	want := [3]browserRow{
+		{ // Chrome / Edge
+			qi: sizeRange{1250, 1250}, q0: sizeRange{1250, 1350},
+			tls: sizeRange{512, 800}, dtls: sizeRange{1100, 1200},
+			nx: sizeRange{1200, 1250}, chromium: true,
+		},
+		{ // Firefox
+			qi: sizeRange{1200, 1252}, q0: sizeRange{1200, 1300},
+			tls: sizeRange{512, 700}, dtls: sizeRange{1050, 1200},
+			nx: sizeRange{1200, 1250},
+		},
+		{ // Safari
+			qi: sizeRange{1250, 1252}, q0: sizeRange{1200, 1300},
+			tls: sizeRange{512, 750}, dtls: sizeRange{1100, 1200},
+			nx: sizeRange{1200, 1250},
+		},
+	}
+	if browserRows != want {
+		t.Errorf("browserRows = %+v, want the fingerprint table %+v", browserRows, want)
 	}
 }
 
