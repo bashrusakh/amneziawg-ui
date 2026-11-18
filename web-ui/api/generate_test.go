@@ -59,6 +59,39 @@ func TestGenerateObfuscationAlwaysValidates(t *testing.T) {
 	}
 }
 
+// A full transport packet - tunnel MTU plus the WireGuard transport overhead
+// plus S4 plus IPv4/UDP - has to stay under a standard 1500-byte path, or
+// every one of them is sent as fragments, and the fragmentation is itself a
+// size signature. Only S4 can break this: it rides on every transport packet,
+// while S1-S3 ride the initiation, response and cookie reply, which no legal
+// draw pushes near 1500. Past a tunnel MTU of 1428 even the padding floor
+// overshoots - fragmentation is unavoidable there, as DOCS says - and the
+// generator collapses S4 onto the floor instead of making the packets any
+// bigger. That degenerate zone is the one this proof exempts.
+func TestFullTransportPacketFitsThePathMTU(t *testing.T) {
+	for _, mtu := range []int{MinMTU, 1330, 1420, 1428, 1429, MaxMTU} {
+		for _, shared := range []bool{false, true} {
+			for range 300 {
+				p := GenerateObfuscation(mtu, shared)
+
+				if wire := mtu + TransportPacketBytes + p.S4; wire > AssumedPathMTU && p.S4 != MinPadding {
+					t.Fatalf("MTU %d: a full transport packet would be %d bytes on the wire (S4 %d)", mtu, wire, p.S4)
+				}
+			}
+		}
+	}
+
+	// In the degenerate zone the collapse is onto exactly the floor - the
+	// exemption above would wave anything through there otherwise.
+	for range 200 {
+		for _, shared := range []bool{false, true} {
+			if p := GenerateObfuscation(MaxMTU, shared); p.S4 != MinPadding {
+				t.Fatalf("MTU %d: the degenerate zone drew S4 %d, want the floor %d", MaxMTU, p.S4, MinPadding)
+			}
+		}
+	}
+}
+
 // Two message types with the same on-the-wire length give the WireGuard
 // message structure away to anyone sorting packets by size, so no generated
 // set may have two paddings land on the same total.

@@ -19,6 +19,9 @@ type sizeRange [2]int
 // traffic that always lands in one narrow size band is a signature.
 // chromium marks the rows whose TLS records land on a multiple of 128
 // inside the slot, the way Chromium pads its records.
+// The sizes are browser UDP-payload measurements tabulated by the Any Tech
+// ARCHITECT project, src/shared/fingerprints.ts (MIT); the values here were
+// verified against that table on 2026-11-18.
 type browserRow struct {
 	qi, q0, tls, dtls, nx sizeRange
 	chromium              bool
@@ -243,9 +246,10 @@ func dnsQuery() packet {
 // handshake packet: type and reserved bytes, sender index, ephemeral key,
 // encrypted static and timestamp, MAC1, and padding out to the row's nx size,
 // so the packet is never the fixed 148 bytes every such packet has. The nx
-// band is the fingerprint table's own (1200-1250 on every row); the small pad
-// the source rule also allows (U[10,40]-times-iv, capped 200) is its
-// no-fingerprint fallback, which the profile-less slots already use.
+// band is the fingerprint table's own (Any Tech ARCHITECT,
+// src/shared/fingerprints.ts - 1200-1250 on every row); the small pad that
+// table's pad-envelope rule also allows (U[10,40]-times-iv, capped 200) is
+// its no-fingerprint fallback, which the profile-less slots already use.
 func noiseIKHandshake(row browserRow) packet {
 	target := min(randInt(row.nx[0], row.nx[1]), maxPacketBytes)
 	return join(
@@ -258,6 +262,27 @@ func noiseIKHandshake(row browserRow) packet {
 		randRaw(max(target-148, 0)),
 	)
 }
+
+// The STUN attribute type codes the profiles emit, pinned against the RFCs
+// they come from: RFC 8489 §5/§14 for the STUN attributes, RFC 8445 §5.1.2.1
+// for the ones an ICE connectivity check carries, and RFC 8656 §18.8 for
+// REQUESTED-TRANSPORT. A code off the registers lands in the
+// comprehension-required range as an unknown attribute and a strict parser
+// rejects the message outright - the imitation falls apart at the first
+// check. FINGERPRINT is pinned with the rest although stunHeader never emits
+// it (see the note there). chains_test.go pins these to the RFC values.
+const (
+	stunUsername           = 0x0006 // USERNAME
+	stunMessageIntegrity   = 0x0008 // MESSAGE-INTEGRITY, 20-byte HMAC-SHA1 value
+	stunRealm              = 0x0014 // REALM
+	stunNonce              = 0x0015 // NONCE
+	stunRequestedTransport = 0x0019 // REQUESTED-TRANSPORT
+	stunPriority           = 0x0024 // PRIORITY, 4-byte value
+	stunUseCandidate       = 0x0025 // USE-CANDIDATE, no value
+	stunFingerprint        = 0x8028 // FINGERPRINT, never emitted (see stunHeader)
+	stunICEControlled      = 0x8029 // ICE-CONTROLLED, 8-byte tie-breaker value
+	stunICEControlling     = 0x802A // ICE-CONTROLLING, 8-byte tie-breaker value
+)
 
 // stunAttr is one STUN attribute (RFC 8489 §5): the type, the length of the
 // value alone, the value, and zero padding to a 4-byte boundary.
@@ -278,24 +303,32 @@ func stunHeader(kind int, attrs packet) packet {
 // credentials and an ICE check fill I1-I4, so a chain reads like a session
 // rather than one repeated packet.
 func stunChain() []packet {
-	allocate := stunHeader(0x0003, stunAttr(0x0019, lit([]byte{0x11, 0x00, 0x00, 0x00})))
+	// REQUESTED-TRANSPORT's value is the transport protocol (17 = UDP) in its
+	// first byte with RFFU zero (RFC 8656 §18.8).
+	allocate := stunHeader(0x0003, stunAttr(stunRequestedTransport, lit([]byte{0x11, 0x00, 0x00, 0x00})))
 	allocateAuth := stunHeader(0x0003, join(
 		// long-term credentials: "<timestamp>:<user>"
-		stunAttr(0x0006, join(randDigits(randInt(9, 10)), litText(":"), randLetters(8))),
-		stunAttr(0x0014, join(randLetters(8), litText("."), randLetters(3))),
-		stunAttr(0x0015, randLetters(16)),
-		stunAttr(0x0008, randRaw(20)),
+		stunAttr(stunUsername, join(randDigits(randInt(9, 10)), litText(":"), randLetters(8))),
+		stunAttr(stunRealm, join(randLetters(8), litText("."), randLetters(3))),
+		stunAttr(stunNonce, randLetters(16)),
+		stunAttr(stunMessageIntegrity, randRaw(20)),
 	))
 
 	iceCheck := []packet{
-		stunAttr(0x0006, join(randLetters(randInt(4, 8)), litText(":"), randLetters(randInt(4, 8)))),
-		stunAttr(0x008a, randRaw(8)),
+		stunAttr(stunUsername, join(randLetters(randInt(4, 8)), litText(":"), randLetters(randInt(4, 8)))),
+	}
+	// A check carries exactly one of ICE-CONTROLLING and ICE-CONTROLLED, with
+	// the agent's 8-byte tie-breaker as the value (RFC 8445 §5.1.2.1).
+	if randInt(0, 1) == 1 {
+		iceCheck = append(iceCheck, stunAttr(stunICEControlling, randRaw(8)))
+	} else {
+		iceCheck = append(iceCheck, stunAttr(stunICEControlled, randRaw(8)))
 	}
 	if randInt(0, 1) == 1 {
-		iceCheck = append(iceCheck, stunAttr(0x0025, nil))
+		iceCheck = append(iceCheck, stunAttr(stunUseCandidate, nil))
 	}
 	priority := 110<<24 + randInt(0x1e00, 0xffff)<<8 + 255
-	iceCheck = append(iceCheck, stunAttr(0x0024, u32(priority)), stunAttr(0x0008, randRaw(20)))
+	iceCheck = append(iceCheck, stunAttr(stunPriority, u32(priority)), stunAttr(stunMessageIntegrity, randRaw(20)))
 
 	return []packet{
 		stunHeader(0x0001, nil),

@@ -111,6 +111,14 @@ func TestCreateServer(t *testing.T) {
 		headers[h] = true
 	}
 
+	// And a full transport packet still fits a standard 1500-byte path: S4
+	// rides on every one of them. Past a tunnel MTU of 1428 even the padding
+	// floor overshoots - fragmentation is unavoidable there and the generator
+	// collapses S4 onto the floor - so exactly that zone (S4 at 12) is exempt.
+	if size := server.MTU + 60 + params.S4; size > 1500 && params.S4 != 12 {
+		t.Errorf("mtu + 60 + S4 = %d, over 1500 (S4 %d)", size, params.S4)
+	}
+
 	time.Sleep(4 * time.Second)
 	a.shot("05-created")
 	a.noPageErrors()

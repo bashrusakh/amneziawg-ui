@@ -17,7 +17,14 @@ import (
 // the two fields it cannot know are filled in here: the MTU, and a key from a
 // cryptographic source.
 func generateObfuscationParams(mtu int) api.ObfuscationParams {
-	p := api.GenerateObfuscation(mtu, false)
+	// api.GenerateObfuscation's second argument is sharedPadding: true rolls
+	// one padding for all four message types (the advanced form's deliberate
+	// choice), false rolls four independent draws. The backend's default is
+	// the four independent draws - named here so the call cannot be misread,
+	// since the same bare literal meant one shared padding before the
+	// parameter's meaning was flipped.
+	const sharedPadding = false
+	p := api.GenerateObfuscation(mtu, sharedPadding)
 	p.MTU = mtu
 	p.HeaderProtectionKey = awg.RandomKey()
 	return *p

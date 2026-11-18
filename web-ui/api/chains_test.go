@@ -109,10 +109,15 @@ func TestChainsUseOnlyTagsTheEngineBuildsPacketsFrom(t *testing.T) {
 }
 
 // Every length field in a generated packet has to cover the bytes the tags
-// expand to at send time, or a parser walks off into what follows. Each
-// check parses the expanded packet to its last byte the way the protocol in
-// question would.
-func TestPacketsParseToTheirLastByte(t *testing.T) {
+// expand to at send time, or a parser walks off into what follows. What the
+// checks prove is exactly that: the framing and the length fields consume the
+// packet to its last byte. QUIC, DTLS 1.3, DNS, SIP and STUN walk their full
+// structure to get there; for TLS 1.3 and DTLS 1.2 the check stops at the
+// fixed prefix (legacy version and 32-byte random) because the body after it
+// is deliberate filler a full-body parse would not accept - a disclosed
+// approximation the target generator shares, and making those bodies fully
+// parseable is a tracked follow-up, not something proven here.
+func TestPacketLengthFieldsCoverEveryByte(t *testing.T) {
 	for range 50 {
 		checkQUIC(t, expand(quicLongPacket(drawRow(), false)), false)
 		checkQUIC(t, expand(quicLongPacket(drawRow(), true)), true)
@@ -151,8 +156,10 @@ func TestPacketsHitTheirBrowserRowSizes(t *testing.T) {
 	}
 }
 
-// The table is pinned against the fingerprint source it is transcribed from;
-// a cell that drifts from it must fail here.
+// The table is pinned against the source it is transcribed from: browser
+// UDP-payload size measurements tabulated by the Any Tech ARCHITECT project,
+// src/shared/fingerprints.ts (MIT), values verified 2026-11-18. A cell that
+// drifts from it must fail here.
 func TestBrowserRowsMatchTheFingerprintTable(t *testing.T) {
 	want := [3]browserRow{
 		{ // Chrome / Edge
@@ -173,6 +180,35 @@ func TestBrowserRowsMatchTheFingerprintTable(t *testing.T) {
 	}
 	if browserRows != want {
 		t.Errorf("browserRows = %+v, want the fingerprint table %+v", browserRows, want)
+	}
+}
+
+// The STUN attribute type codes are named constants in profiles.go; this
+// pins them to the values their sources register - RFC 8489 §5/§14 and
+// RFC 8445 §5.1.2.1 for the STUN and ICE attributes, RFC 8656 §18.8 for
+// REQUESTED-TRANSPORT - so a transcription slip like the ICE-CONTROLLING
+// code that once read 0x008a fails here rather than in a strict parser at
+// the other end.
+func TestSTUNAttributeTypesMatchTheRFCs(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"USERNAME", stunUsername, 0x0006},
+		{"MESSAGE-INTEGRITY", stunMessageIntegrity, 0x0008},
+		{"REALM", stunRealm, 0x0014},
+		{"NONCE", stunNonce, 0x0015},
+		{"REQUESTED-TRANSPORT", stunRequestedTransport, 0x0019},
+		{"PRIORITY", stunPriority, 0x0024},
+		{"USE-CANDIDATE", stunUseCandidate, 0x0025},
+		{"FINGERPRINT", stunFingerprint, 0x8028},
+		{"ICE-CONTROLLED", stunICEControlled, 0x8029},
+		{"ICE-CONTROLLING", stunICEControlling, 0x802A},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %#04x, want the RFC-registered %#04x", c.name, c.got, c.want)
+		}
 	}
 }
 
@@ -214,6 +250,11 @@ func checkQUIC(t *testing.T, b []byte, zeroRTT bool) {
 	}
 }
 
+// checkTLS walks the TLS 1.3 ClientHello's record and handshake framing: the
+// two length fields cover the packet to its last byte and the body opens with
+// the legacy version and 32-byte random. Everything after that prefix is
+// deliberate filler (see the note on the test), so nothing is claimed about
+// the body parsing as a real ClientHello.
 func checkTLS(t *testing.T, b []byte) {
 	t.Helper()
 	if b[0] != 0x16 || b[1] != 0x03 || b[2] != 0x01 {
@@ -269,6 +310,12 @@ func checkDTLS12(t *testing.T, b []byte) {
 	t.Helper()
 	hs := checkDTLSRecord(t, b)
 	bodyLen := checkDTLSHandshakeHead(t, hs)
+	// The declared body length is exactly what the builder puts in the body -
+	// the client version and the 32-byte random, 34 bytes. A real DTLS 1.2
+	// ClientHello body runs on with cookie, suites and more, and the record's
+	// tail after the handshake message is padding no message claims: this
+	// pins the length accounting to the fixed prefix, not full-body
+	// parseability (see the note on the test).
 	if bodyLen != 34 {
 		t.Fatalf("DTLS 1.2 body length %d, want the version and 32-byte random", bodyLen)
 	}
@@ -365,6 +412,15 @@ func checkSIP(t *testing.T, b []byte) {
 	}
 }
 
+// knownAttrs is every attribute type the builders emit - the pinned set from
+// profiles.go - so a message carrying anything outside the RFC registers
+// fails here.
+var knownAttrs = map[int]bool{
+	stunUsername: true, stunMessageIntegrity: true, stunRealm: true,
+	stunNonce: true, stunRequestedTransport: true, stunPriority: true,
+	stunUseCandidate: true, stunICEControlled: true, stunICEControlling: true,
+}
+
 func checkSTUN(t *testing.T, b []byte) {
 	t.Helper()
 	if length := be16(b[2:4]); length != len(b)-20 {
@@ -375,7 +431,16 @@ func checkSTUN(t *testing.T, b []byte) {
 	}
 	i := 20
 	for i < len(b) {
+		kind := be16(b[i : i+2])
 		valueLen := be16(b[i+2 : i+4])
+		if !knownAttrs[kind] {
+			t.Fatalf("STUN attribute type %#04x is not one the RFCs register", kind)
+		}
+		// MESSAGE-INTEGRITY is the last attribute of the message and its
+		// value is the 20-byte HMAC-SHA1 (RFC 8489 §5).
+		if kind == stunMessageIntegrity && (valueLen != 20 || i+4+valueLen != len(b)) {
+			t.Fatalf("MESSAGE-INTEGRITY carries %d bytes at offset %d, want 20 bytes closing the message", valueLen, i)
+		}
 		i += 4 + valueLen + (4-valueLen%4)%4
 	}
 	if i != len(b) {

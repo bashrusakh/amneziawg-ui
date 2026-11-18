@@ -8,6 +8,18 @@ import (
 // The draws behind every generated AmneziaWG 3.1 parameter set: one copy for
 // the create form, the backend and the per-client variation.
 
+// AssumedPathMTU is the path the tunnel is assumed to run over, and
+// TransportPacketBytes what a full-size transport packet weighs beyond the
+// tunneled packet itself: WireGuard's transport header and AEAD tag (32) plus
+// IPv4/UDP (28). S4 rides on every transport packet, so the biggest one -
+// MTU + TransportPacketBytes + S4 - has to fit AssumedPathMTU unfragmented.
+// Overshooting fragments every full-size packet, which is both slow and
+// exactly the signature AmneziaWG is trying not to have.
+const (
+	AssumedPathMTU       = 1500
+	TransportPacketBytes = 60
+)
+
 // GenerateObfuscation rolls a full AmneziaWG 3.1 parameter set that passes
 // Validate at the given MTU, every number a fresh draw from the system's
 // cryptographic source. The fixed set it replaces - Jmin/Jmax 8/80, headers
@@ -106,20 +118,31 @@ func paddedLengths(s1, s2, s3, s4 int) [4]int {
 // the WireGuard message structure away to anyone sorting packets by size:
 // the repair walks the offender one step aside and redraws when walking
 // cannot settle it.
+//
+// Only S4 carries the path budget: it rides on every transport packet, while
+// S1-S3 ride the initiation, response and cookie reply - at most
+// 148+150+28 bytes on the wire however they are drawn - which no legal draw
+// can push over a 1500-byte path. The budget tightens the per-slot ceilings
+// where it is smaller, and past a tunnel MTU of 1428 it falls below the
+// padding floor (12): fragmentation is unavoidable there, as DOCS says, and
+// the draws collapse onto the floor rather than making the packets any
+// bigger. Validate is deliberately not involved - a user-typed value outside
+// the generated windows stays legal.
 func drawPaddings(mtu int, sharedPadding bool) (s1, s2, s3, s4 int) {
 	s1Max := min(maxPaddingS1S2, mtu-148)
 	s2Max := min(maxPaddingS1S2, mtu-92)
+	s4Max := min(maxPaddingS4, AssumedPathMTU-TransportPacketBytes-mtu)
 
 	if sharedPadding {
-		one := randInt(MinPadding, min(maxPaddingS4, s1Max, s2Max))
+		one := randInt(MinPadding, min(s4Max, s1Max, s2Max))
 		return one, one, one, one
 	}
 
 	for range 32 {
 		s1, s2 = randInt(MinPadding, s1Max), randInt(MinPadding, s2Max)
-		s3, s4 = randInt(MinPadding, maxPaddingS3), randInt(MinPadding, maxPaddingS4)
+		s3, s4 = randInt(MinPadding, maxPaddingS3), randInt(MinPadding, s4Max)
 
-		ceilings := [4]int{s1Max, s2Max, maxPaddingS3, maxPaddingS4}
+		ceilings := [4]int{s1Max, s2Max, maxPaddingS3, s4Max}
 		flat := [4]int{s1, s2, s3, s4}
 		for range 10 {
 			j, clash := collidingPair(flat)
@@ -129,7 +152,11 @@ func drawPaddings(mtu int, sharedPadding bool) (s1, s2, s3, s4 int) {
 			flat[j] = stepAside(flat[j], ceilings[j])
 		}
 	}
-	return MinPadding, MinPadding + 1, MinPadding + 2, MinPadding + 3
+	// The fallback keeps S4 at the floor, so even a set that could only be
+	// produced here honours the degenerate-zone exemption of the
+	// transport-wire proof. Its totals stand apart on the message sizes
+	// alone (160/105/78/44).
+	return MinPadding, MinPadding + 1, MinPadding + 2, MinPadding
 }
 
 // collidingPair finds the later of two message types whose on-the-wire
