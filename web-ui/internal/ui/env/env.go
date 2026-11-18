@@ -24,8 +24,10 @@ type Env struct {
 	// the call has come back. Safe from any goroutine.
 	Reload func()
 
-	// DefaultI is the I1-I5 set the backend gives a new client, as last
-	// reported by it. The client editor shows it as placeholders.
+	// DefaultI is the backend's preview chain as last fetched: one fresh
+	// I1-I5 draw standing in for the chain a new client is issued, every
+	// client getting one of its own. The client editor shows it as
+	// placeholders.
 	DefaultI func() api.ISettings
 }
 

@@ -114,20 +114,51 @@ func TestChainsUseOnlyTagsTheEngineBuildsPacketsFrom(t *testing.T) {
 // question would.
 func TestPacketsParseToTheirLastByte(t *testing.T) {
 	for range 50 {
-		checkQUIC(t, expand(quicLongPacket(false)), false)
-		checkQUIC(t, expand(quicLongPacket(true)), true)
-		checkTLS(t, expand(tlsClientHello()))
-		checkDTLS12(t, expand(dtls12ClientHello()))
-		checkDTLS13(t, expand(dtls13ClientHello()))
+		checkQUIC(t, expand(quicLongPacket(drawRow(), false)), false)
+		checkQUIC(t, expand(quicLongPacket(drawRow(), true)), true)
+		checkTLS(t, expand(tlsClientHello(drawRow())))
+		checkDTLS12(t, expand(dtls12ClientHello(drawRow())))
+		checkDTLS13(t, expand(dtls13ClientHello(drawRow())))
 		checkDNS(t, expand(dnsQuery()))
 		checkSIP(t, expand(sipRegister()))
 
-		if n := expand(noiseIKHandshake()); len(n) < 158 || len(n) > 188 {
-			t.Fatalf("Noise_IK handshake is %d bytes, want 148 plus 10..40 of pad", len(n))
-		}
 		for _, msg := range stunChain() {
 			checkSTUN(t, expand(msg))
 		}
+	}
+}
+
+// The size table is what the mimicry rests on: a packet that lands outside
+// the drawn row's slot for its protocol - like QUIC payloads once did, capped
+// to half the target - is itself the signature. Totals are spot-checked per
+// row across many draws; the Chromium-family rows round their TLS records up
+// to a multiple of 128, the rest land inside the slot as drawn.
+func TestPacketsHitTheirBrowserRowSizes(t *testing.T) {
+	for _, row := range browserRows {
+		for range 30 {
+			inSlot(t, "QUIC Initial", len(expand(quicLongPacket(row, false))), row.qi)
+			inSlot(t, "QUIC 0-RTT", len(expand(quicLongPacket(row, true))), row.q0)
+			inSlot(t, "DTLS 1.2", len(expand(dtls12ClientHello(row))), row.dtls)
+			inSlot(t, "DTLS 1.3", len(expand(dtls13ClientHello(row))), row.dtls)
+			inSlot(t, "Noise_IK", len(expand(noiseIKHandshake(row))), row.nx)
+
+			got := len(expand(tlsClientHello(row)))
+			slot := row.tls
+			if row.chromium {
+				slot = sizeRange{(row.tls[0] + 127) / 128 * 128, (row.tls[1] + 127) / 128 * 128}
+				if got%128 != 0 {
+					t.Fatalf("Chromium-family TLS ClientHello is %d bytes, want a multiple of 128", got)
+				}
+			}
+			inSlot(t, "TLS ClientHello", got, slot)
+		}
+	}
+}
+
+func inSlot(t *testing.T, name string, n int, slot sizeRange) {
+	t.Helper()
+	if n < slot[0] || n > slot[1] {
+		t.Fatalf("%s is %d bytes, want the %d..%d slot", name, n, slot[0], slot[1])
 	}
 }
 

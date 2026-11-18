@@ -44,7 +44,7 @@ func ShowEditor(e *env.Env, server api.Server, client *api.Client) {
 	for i, entry := range iEntries {
 		key := fmt.Sprintf("i%d", i+1)
 		if value := defaults[key]; value != "" {
-			entry.SetPlaceHolder(lang.L("server default: {{.Value}}", map[string]any{"Value": widgets.Truncate(value, 40)}))
+			entry.SetPlaceHolder(lang.L("example, generated per client: {{.Value}}", map[string]any{"Value": widgets.Truncate(value, 40)}))
 		} else {
 			entry.SetPlaceHolder(lang.L("leave empty to skip"))
 		}

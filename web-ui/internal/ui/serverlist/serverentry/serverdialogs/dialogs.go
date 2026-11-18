@@ -67,7 +67,7 @@ func presentConfig(e *env.Env, info api.ServerInfo) {
 
 	if len(info.DefaultISettings) > 0 {
 		body.Add(widgets.Separator())
-		body.Add(widgets.SectionTitle(lang.L("Default I-settings")))
+		body.Add(widgets.SectionTitle(lang.L("I-settings preview")))
 		rows := make([][2]string, 0, len(info.DefaultISettings))
 		for i := 1; i <= 5; i++ {
 			key := fmt.Sprintf("i%d", i)
@@ -80,7 +80,7 @@ func presentConfig(e *env.Env, info api.ServerInfo) {
 			rows = append(rows, [2]string{strings.ToUpper(key), value})
 		}
 		body.Add(widgets.InfoGrid(rows))
-		body.Add(widgets.MutedNote(lang.L("These defaults are used for new clients when \"Apply I-settings\" is enabled.")))
+		body.Add(widgets.MutedNote(lang.L("This is a fresh preview: with \"Apply I-settings\" on, every new client is issued a generated chain of its own.")))
 	}
 
 	full := widgets.NewButton(lang.L("View full config"), theme.DocumentIcon(), func() {

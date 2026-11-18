@@ -14,54 +14,72 @@ import (
 type sizeRange [2]int
 
 // browserRow is one browser's UDP payload sizes per traffic kind - qi for
-// QUIC Initial, q0 for 0-RTT, tls for a TLS ClientHello, dtls for DTLS - and
-// a chain pads toward the row it draws: traffic that always lands in one
-// narrow size band is a signature.
-type browserRow struct{ qi, q0, tls, dtls sizeRange }
+// QUIC Initial, q0 for 0-RTT, tls for a TLS ClientHello, dtls for DTLS, nx
+// for a Noise_IK handshake - and a chain pads toward the row it draws:
+// traffic that always lands in one narrow size band is a signature.
+// chromium marks the rows whose TLS records are padded up to a multiple of
+// 128 on top of the drawn size, the way Chromium pads its records.
+type browserRow struct {
+	qi, q0, tls, dtls, nx sizeRange
+	chromium              bool
+}
 
 var browserRows = [3]browserRow{
 	{ // Chrome / Edge
 		qi: sizeRange{1250, 1250}, q0: sizeRange{1250, 1350},
 		tls: sizeRange{512, 800}, dtls: sizeRange{1100, 1200},
+		nx: sizeRange{1200, 1250}, chromium: true,
 	},
 	{ // Firefox
 		qi: sizeRange{1200, 1252}, q0: sizeRange{1200, 1300},
 		tls: sizeRange{512, 700}, dtls: sizeRange{1050, 1200},
+		nx: sizeRange{1200, 1250},
 	},
 	{ // Safari
 		qi: sizeRange{1250, 1252}, q0: sizeRange{1250, 1300},
 		tls: sizeRange{512, 750}, dtls: sizeRange{1100, 1200},
+		nx: sizeRange{1200, 1250},
 	},
 }
+
+// drawRow picks the browser profile one packet is built for.
+func drawRow() browserRow { return browserRows[randInt(0, len(browserRows)-1)] }
+
+// maxPacketBytes is the ceiling on one packet: the path MTU minus the UDP/IP
+// headers, the number the docs put on an I-packet - past it the packet
+// fragments, and the fragmentation is the signature this exists to avoid.
+const maxPacketBytes = 1472
 
 // chainProfiles are the profiles a chain draws from, one picked at random
 // per chain; each returns the packets filling I1 onwards, and the slots past
 // the last one get an entropy chain.
 var chainProfiles = []func() []packet{
-	func() []packet { return []packet{quicLongPacket(false)} },
-	func() []packet { return []packet{tlsClientHello()} },
+	func() []packet { return []packet{quicLongPacket(drawRow(), false)} },
+	func() []packet { return []packet{tlsClientHello(drawRow())} },
 	func() []packet { return []packet{dnsQuery()} },
-	func() []packet { return []packet{noiseIKHandshake()} },
-	func() []packet { return []packet{dtls12ClientHello()} },
+	func() []packet { return []packet{noiseIKHandshake(drawRow())} },
+	func() []packet { return []packet{dtls12ClientHello(drawRow())} },
 	stunChain,
 	func() []packet { return []packet{sipRegister()} },
-	func() []packet { return []packet{quicLongPacket(true)} },
-	func() []packet { return []packet{dtls13ClientHello()} },
+	func() []packet { return []packet{quicLongPacket(drawRow(), true)} },
+	func() []packet { return []packet{dtls13ClientHello(drawRow())} },
 }
 
 // quicLongPacket builds one QUIC long-header packet - Initial (RFC 9000
 // §17.2.2) or 0-RTT (§17.2.3, no token field at all). Length covers the
-// packet number, payload and AEAD tag; the payload pads toward the browser
-// row's size, capped so a signature packet cannot fill a path MTU.
-func quicLongPacket(zeroRTT bool) packet {
+// packet number, payload and AEAD tag; the payload pads the packet out to
+// the drawn row's qi/q0 size - a real Initial is 1200 bytes and up, so a QUIC
+// packet that always lands short of that is the signature - capped by the
+// path MTU.
+func quicLongPacket(row browserRow, zeroRTT bool) packet {
 	pnLen := randInt(1, 4)
 	flags := 0xc0 | (pnLen - 1)
-	row := browserRows[randInt(0, len(browserRows)-1)]
 	target := randInt(row.qi[0], row.qi[1])
 	if zeroRTT {
 		flags = 0xd0 | (pnLen - 1)
 		target = randInt(row.q0[0], row.q0[1])
 	}
+	target = min(target, maxPacketBytes)
 
 	dcidLen := randInt(8, 20)
 	scidLen := randInt(0, 20)
@@ -86,7 +104,7 @@ func quicLongPacket(zeroRTT bool) packet {
 	pad := 0
 	for range 2 { // the varint's own width depends on the pad it covers
 		length := pnLen + pad + 16
-		pad = min(max(target-head.wire()-varint(length).wire()-pnLen-16, 0), 500)
+		pad = max(target-head.wire()-varint(length).wire()-pnLen-16, 0)
 	}
 	length := pnLen + pad + 16
 
@@ -96,11 +114,14 @@ func quicLongPacket(zeroRTT bool) packet {
 // tlsClientHello builds a TLS 1.3 ClientHello record (RFC 8446 §5.1, body
 // of §4.1.2): lengths cover everything after them, then the legacy version,
 // the 32-byte random, a filler standing in for the session and SNI fields,
-// and padding toward the browser row's TLS size, rounded up the way Chromium
-// pads its records (no row: U[300,550]; every row has one).
-func tlsClientHello() packet {
-	row := browserRows[randInt(0, len(browserRows)-1)]
-	target := (randInt(row.tls[0], row.tls[1]) + 127) / 128 * 128
+// and padding so the record lands on the row's tls size - rounded up to a
+// multiple of 128 for the Chromium-family rows, which pad their records that
+// way (no row: U[300,550]; every chain draws one).
+func tlsClientHello(row browserRow) packet {
+	target := randInt(row.tls[0], row.tls[1])
+	if row.chromium {
+		target = (target + 127) / 128 * 128
+	}
 
 	filler := randLetters(randInt(16, 48))
 	body := join(
@@ -122,8 +143,7 @@ func dtlsSeq() packet {
 // dtls12ClientHello builds a DTLS 1.2 record (RFC 6347 §4.1, §4.2.2):
 // legacy record framing with epoch and sequence number, one unfragmented
 // handshake message, and trailing padding inside the record length.
-func dtls12ClientHello() packet {
-	row := browserRows[randInt(0, len(browserRows)-1)]
+func dtls12ClientHello(row browserRow) packet {
 	target := randInt(row.dtls[0], row.dtls[1])
 
 	body := join(lit([]byte{0xfe, 0xfd}), randRaw(32))
@@ -141,8 +161,7 @@ func dtls12ClientHello() packet {
 // body shape (RFC 9147 §4, §5.3), ending in supported_versions (DTLS 1.3)
 // and one GREASE extension (RFC 8701) whose declared length swallows the
 // trailing padding, so the ClientHello parses out to its last byte.
-func dtls13ClientHello() packet {
-	row := browserRows[randInt(0, len(browserRows)-1)]
+func dtls13ClientHello(row browserRow) packet {
 	target := randInt(row.dtls[0], row.dtls[1])
 	// Everything outside the tail: record framing (13), handshake header
 	// (12), legacy version and random (34), empty session and cookie (2),
@@ -219,9 +238,13 @@ func dnsQuery() packet {
 
 // noiseIKHandshake builds a WireGuard MessageInitiation - the Noise_IK
 // handshake packet: type and reserved bytes, sender index, ephemeral key,
-// encrypted static and timestamp, MAC1, and a small pad so the size is not
-// the fixed 148 bytes every such packet has.
-func noiseIKHandshake() packet {
+// encrypted static and timestamp, MAC1, and padding out to the row's nx size,
+// so the packet is never the fixed 148 bytes every such packet has. The nx
+// band is the fingerprint table's own (1200-1250 on every row); the small pad
+// the source rule also allows (U[10,40]-times-iv, capped 200) is its
+// no-fingerprint fallback, which the profile-less slots already use.
+func noiseIKHandshake(row browserRow) packet {
+	target := min(randInt(row.nx[0], row.nx[1]), maxPacketBytes)
 	return join(
 		lit([]byte{0x01, 0x00, 0x00, 0x00}),
 		randRaw(4),
@@ -229,7 +252,7 @@ func noiseIKHandshake() packet {
 		randRaw(48),
 		randRaw(28),
 		randRaw(32),
-		randRaw(min(randInt(10, 40), 200)),
+		randRaw(max(target-148, 0)),
 	)
 }
 

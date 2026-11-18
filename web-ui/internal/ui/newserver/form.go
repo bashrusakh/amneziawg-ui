@@ -25,8 +25,8 @@ var (
 
 // What the engine accepts, and the checks against it, live in the shared api
 // package next to the types they describe - the form and the backend call the
-// same copy. What stays here is presentation: the recommended values the
-// captions carry, as the amneziawg-linux-kernel-module README gives them.
+// same copy. What stays here is presentation: the ranges the captions carry,
+// the ones the generator draws from.
 
 // The values the simple mode fills in on the user's behalf, and the ones the
 // advanced fields start out with - declared once so the two modes can never
@@ -321,25 +321,26 @@ func (f *Form) buildObfuscation() fyne.CanvasObject {
 	f.h3 = number(seed.H3, "1-4294967295")
 	f.h4 = number(seed.H4, "1-4294967295")
 
-	// Captions carry the recommended value, placeholders the accepted range:
-	// the range only matters once you are deliberately leaving the
-	// recommendation, and the field shows it as soon as it is cleared.
+	// Captions carry the ranges the generator draws from, placeholders the
+	// accepted engine range: the engine range only matters once you are
+	// deliberately leaving the generated values, and the field shows it as
+	// soon as it is cleared.
 	junk := container.NewGridWithColumns(3,
-		widgets.Labeled(lang.L("Jc (recommended 4-12)"), f.jc),
-		widgets.Labeled(lang.L("Jmin (recommended 8)"), f.jmin),
-		widgets.Labeled(lang.L("Jmax (recommended 80)"), f.jmax),
+		widgets.Labeled(lang.L("Jc (random 2-11)"), f.jc),
+		widgets.Labeled(lang.L("Jmin (random 64-768)"), f.jmin),
+		widgets.Labeled(lang.L("Jmax (random 256-1280)"), f.jmax),
 	)
 	sizes := container.NewGridWithColumns(4,
-		widgets.Labeled(lang.L("S1 (recommended 15-150)"), f.s1),
-		widgets.Labeled(lang.L("S2 (same as S1)"), f.s2),
-		widgets.Labeled(lang.L("S3 (same as S1)"), f.s3),
-		widgets.Labeled(lang.L("S4 (same as S1)"), f.s4),
+		widgets.Labeled(lang.L("S1 (random 12-150)"), f.s1),
+		widgets.Labeled(lang.L("S2 (random 12-150)"), f.s2),
+		widgets.Labeled(lang.L("S3 (random 12-64)"), f.s3),
+		widgets.Labeled(lang.L("S4 (random 12-32)"), f.s4),
 	)
 	headers := container.NewGridWithColumns(4,
-		widgets.Labeled(lang.L("H1 (recommended 1)"), f.h1),
-		widgets.Labeled(lang.L("H2 (recommended 2)"), f.h2),
-		widgets.Labeled(lang.L("H3 (recommended 3)"), f.h3),
-		widgets.Labeled(lang.L("H4 (recommended 4)"), f.h4),
+		widgets.Labeled(lang.L("H1 (random 100000000-900000000)"), f.h1),
+		widgets.Labeled(lang.L("H2 (random 1200000000-2000000000)"), f.h2),
+		widgets.Labeled(lang.L("H3 (random 2400000000-3200000000)"), f.h3),
+		widgets.Labeled(lang.L("H4 (random 3600000000-4000000000)"), f.h4),
 	)
 	f.distinctPaddings = widget.NewCheck(lang.L("Roll S1-S4 separately instead of one value for all four"), nil)
 	// Separate draws are the default now; the box keeps "one value for all
@@ -347,13 +348,15 @@ func (f *Form) buildObfuscation() fyne.CanvasObject {
 	f.distinctPaddings.SetChecked(true)
 
 	sizesNote := widgets.MutedNote(lang.L("At least 12 for each padding is the one hard rule here - header protection is always " +
-		"on in this app and takes its 12-byte nonce from the start of that padding. H1-H4 at 1/2/3/4 follows from the " +
-		"same thing: header protection encrypts the message type itself, so custom headers change nothing an observer " +
-		"can see (without header protection the advice is the opposite - four distinct values in 5-2147483647).\n\n" +
-		"One value for all four paddings is what the docs recommend while RandomTrailers is on, because it is what keeps " +
-		"the receiver from reading one message type as another. It does leave the gaps between the types at WireGuard's " +
-		"own 148/92/64/32, which an observer can recover from the smallest packet of each type; rolling them separately " +
-		"hides that, and gives up the receiver's margin in exchange."))
+		"on in this app and takes its 12-byte nonce from the start of that padding. Everything else is a fresh random draw " +
+		"from the ranges above on every generation and every deployment - Jc/Jmin/Jmax, S1-S4 and H1-H4 - with H1-H4 always " +
+		"four distinct values, one per zone, and never 1/2/3/4 (the plain WireGuard message types; without header protection " +
+		"the advice is the same, four distinct values in 5-2147483647). Each client is then issued its own junk train and its " +
+		"own I1-I5 chain, while H1-H4, S1-S4, the header protection key and MTU stay exactly the server's.\n\n" +
+		"Rolling the paddings separately, the default here, keeps the gaps between the message types from sitting at " +
+		"WireGuard's own 148/92/64/32, which an observer can recover from the smallest packet of each type. One value for " +
+		"all four is what the docs recommend while RandomTrailers is on, because it is what keeps the receiver from reading " +
+		"one message type as another; untick the box above to bring it back and that hiding is given up in exchange."))
 
 	limitsNote := widgets.MutedNote(lang.L("The placeholders are what the engine accepts, not what is wise. On top of them S1 must " +
 		"fit MTU-148, S2 must fit MTU-92, S1+56 must not equal S2, and H1-H4 must all differ."))
