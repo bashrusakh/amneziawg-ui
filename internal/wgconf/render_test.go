@@ -1,6 +1,7 @@
 package wgconf
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -87,10 +88,17 @@ func TestISettingsHangOffI1(t *testing.T) {
 
 func TestMergeISettingsLayersOverrides(t *testing.T) {
 	got := MergeISettings(map[string]string{"i1": "stored", "i2": "stored2"}, map[string]string{"i1": "new", "i2": ""})
-	if got["i1"] != "new" || got["i2"] != "stored2" || got["i3"] != DefaultI3 {
+	if got["i1"] != "new" || got["i2"] != "stored2" || got["i3"] != "" {
 		t.Errorf("MergeISettings = %v", got)
 	}
-	if got := MergeISettings(); got["i1"] != DefaultI1 {
-		t.Errorf("no layers should yield the defaults, got %v", got)
+	// The five keys are always present so a renderer can walk them, but no
+	// value is shipped: the generated chain is a layer the caller passes in,
+	// and the old shared DefaultI1 was a template across every deployment.
+	empty := MergeISettings()
+	for slot := 1; slot <= 5; slot++ {
+		key := fmt.Sprintf("i%d", slot)
+		if empty[key] != "" {
+			t.Errorf("no layers should leave %s empty, got %q", key, empty[key])
+		}
 	}
 }

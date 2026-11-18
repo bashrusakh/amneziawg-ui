@@ -1,101 +1,219 @@
 package api
 
-import "math/rand"
-
-// The window the amneziawg-linux-kernel-module README recommends for S1 and
-// S2, which the generator uses for all four paddings, and what a generated
-// padding has to leave room for: S4 rides on every transport packet, so the
-// biggest one still has to fit the path the tunnel runs over - tunnel MTU +
-// MessageTransportSize (32) + IPv4/UDP headers (28) + S4 <= 1500. Overshooting
-// fragments every full-size packet, which is both slow and exactly the
-// signature AmneziaWG is trying not to have.
-const (
-	MinRecommendedPadding = 15
-	MaxRecommendedPadding = 150
-	AssumedPathMTU        = 1500
-	TransportPacketBytes  = 60
+import (
+	"crypto/rand"
+	"encoding/binary"
 )
 
+// The draws behind every generated AmneziaWG 3.1 parameter set: one copy for
+// the create form, the backend and the per-client variation.
+
 // GenerateObfuscation rolls a full AmneziaWG 3.1 parameter set that passes
-// Validate at the given MTU.
-//
-// The shape follows what the AmneziaWG docs recommend for the mode this app
-// always runs in - header protection on, RandomTrailers on - rather than
-// randomising everything that could be randomised: the standard message types
-// for H1-H4, because header protection encrypts the type field itself and
-// custom headers add nothing an observer can see, and the recommended 8/80
-// junk packet sizes. Jc is the one number left to chance, which is where the
-// docs put it.
-//
-// MTU and HeaderProtectionKey are left alone: the caller knows the first, and
-// the key has to come from a cryptographic source rather than from here.
-func GenerateObfuscation(mtu int, distinctPaddings bool) *ObfuscationParams {
-	s1, s2, s3, s4 := RecommendedPaddings(mtu, distinctPaddings)
+// Validate at the given MTU, every number a fresh draw from the system's
+// cryptographic source. The fixed set it replaces - Jmin/Jmax 8/80, headers
+// 1/2/3/4, one shared padding - was identical on every deployment: one
+// observer who has seen one tunnel has seen all of them. MTU and
+// HeaderProtectionKey belong to the caller. sharedPadding keeps "one value
+// for all four" for the advanced form's deliberate choice; the default is
+// four independent draws, since identical paddings make the four message
+// types one recognisable size.
+func GenerateObfuscation(mtu int, sharedPadding bool) *ObfuscationParams {
+	s1, s2, s3, s4 := drawPaddings(mtu, sharedPadding)
+	jc, jmin, jmax := drawJunk(mtu)
+	h1, h2, h3, h4 := drawHeaders()
 
 	return &ObfuscationParams{
-		Jc:             randomBetween(4, 12),
-		Jmin:           8,
-		Jmax:           80,
+		Jc:             jc,
+		Jmin:           jmin,
+		Jmax:           jmax,
 		S1:             s1,
 		S2:             s2,
 		S3:             s3,
 		S4:             s4,
-		H1:             1,
-		H2:             2,
-		H3:             3,
-		H4:             4,
+		H1:             h1,
+		H2:             h2,
+		H3:             h3,
+		H4:             h4,
 		RandomTrailers: true,
 		DisableCookies: true,
 	}
 }
 
-// RecommendedPaddings rolls S1-S4, either as one value repeated or as four
-// independent draws.
-//
-// One value is what the AmneziaWG docs recommend while RandomTrailers is on:
-// packet sizes float, and equal paddings are what stops the receiver reading
-// one message type as another. The cost is that the gaps between the four
-// message types stay exactly WireGuard's own (148/92/64/32), and an observer
-// who can find the smallest packet of each type recovers that structure. Four
-// separate values hide the structure and give up the receiver's margin, which
-// is why it is a deliberate choice rather than the default.
-//
-// Every draw fits the same three ceilings - the recommended 15-150 window,
-// S1's MTU-148 limit (the tightest of the four), and the room a transport
-// packet leaves under the path MTU - so any of them is legal in any of the
-// four slots. Above a tunnel MTU of about 1425 the last ceiling leaves nothing
-// and the window collapses onto its floor.
-func RecommendedPaddings(mtu int, distinct bool) (s1, s2, s3, s4 int) {
-	hi := min(MaxRecommendedPadding, mtu-148, AssumedPathMTU-TransportPacketBytes-mtu)
-	roll := func() int { return randomBetween(MinRecommendedPadding, hi) }
-
-	if !distinct {
-		padding := roll()
-		return padding, padding, padding, padding
+// VaryForClient derives the parameter set one client is issued from its
+// server's: the junk train is sender-scope and redrawn per client (with its
+// own I1-I5 chain from GenerateISettings), while everything the receiver
+// compares - H1-H4, S1-S4, the header protection key, MTU, the 3.1 switches
+// and the timing knobs - stays exactly the server's. nil in, nil out.
+func VaryForClient(server *ObfuscationParams, mtu int) *ObfuscationParams {
+	if server == nil {
+		return nil
 	}
-
-	s1, s3, s4 = roll(), roll(), roll()
-	// A collapsed window leaves nothing to re-roll; Validate reports the
-	// S1+56 collision on its own if it comes to that.
-	for range 100 {
-		s2 = roll()
-		if s1+56 != s2 {
-			break
-		}
-	}
-	return s1, s2, s3, s4
+	p := *server
+	p.Jc, p.Jmin, p.Jmax = drawJunk(mtu)
+	return &p
 }
 
-// randomBetween returns a value in [lo, hi], collapsing to lo when an MTU too
-// small for the range has squeezed the window shut - the MTU check reports
-// that on its own, and this must not panic in the meantime.
-//
-// math/rand rather than crypto/rand on purpose: these are packet shapes, not
-// secrets, and the one value that is a secret - the header protection key -
-// is generated by the backend from a cryptographic source.
-func randomBetween(lo, hi int) int {
+// junkIntensities are the Jmin and Jmax windows of the low, medium and high
+// junk trains - far apart, because a length hovering around one number is
+// as recognisable as a fixed one.
+var junkIntensities = [3][4]int{
+	{64, 256, 256, 512},
+	{128, 512, 512, 1024},
+	{256, 768, 768, 1280},
+}
+
+// drawJunk rolls Jc from a level that reads like ordinary traffic, jittered
+// by one, and the window from one intensity; Jmax is pushed clear when the
+// draws land too close to tell a junk packet from a real one. The bounded
+// redraw is for an MTU outside the legal range, which Validate refuses.
+func drawJunk(mtu int) (jc, jmin, jmax int) {
+	levels := [...]int{3, 5, 7, 10}
+	jc = min(max(levels[randInt(0, len(levels)-1)]+randInt(-1, 1), 1), 15)
+
+	for range 32 {
+		window := junkIntensities[randInt(0, len(junkIntensities)-1)]
+		jmin = randInt(window[0], window[1])
+		jmax = randInt(window[2], window[3])
+		if jmax <= jmin+64 {
+			jmax = jmin + 64 + randInt(64, 256)
+		}
+		if jmin >= 1 && jmax <= mtu {
+			return jc, jmin, jmax
+		}
+	}
+	return jc, 1, max(2, mtu)
+}
+
+// The per-message-type padding windows: S1/S2 ride the handshake packets,
+// S3/S4 the cookie reply and every transport packet, where a big padding
+// would push a full-size packet over the path MTU.
+const (
+	maxPaddingS1S2 = 150
+	maxPaddingS3   = 64
+	maxPaddingS4   = 32
+)
+
+// paddedLengths are the four on-the-wire message sizes: WireGuard's
+// initiation (148), response (92) and cookie reply (64) and the smallest
+// transport packet (32), each with its padding on top.
+func paddedLengths(s1, s2, s3, s4 int) [4]int {
+	return [4]int{s1 + 148, s2 + 92, s3 + 64, s4 + 32}
+}
+
+// drawPaddings rolls S1-S4 as four independent draws - or the one shared
+// value the advanced form offers - and always returns a set Validate accepts
+// at the given MTU. Two message types with the same on-the-wire length give
+// the WireGuard message structure away to anyone sorting packets by size:
+// the repair walks the offender one step aside and redraws when walking
+// cannot settle it.
+func drawPaddings(mtu int, sharedPadding bool) (s1, s2, s3, s4 int) {
+	s1Max := min(maxPaddingS1S2, mtu-148)
+	s2Max := min(maxPaddingS1S2, mtu-92)
+
+	if sharedPadding {
+		one := randInt(MinPadding, min(maxPaddingS4, s1Max, s2Max))
+		return one, one, one, one
+	}
+
+	for range 32 {
+		s1, s2 = randInt(MinPadding, s1Max), randInt(MinPadding, s2Max)
+		s3, s4 = randInt(MinPadding, maxPaddingS3), randInt(MinPadding, maxPaddingS4)
+
+		ceilings := [4]int{s1Max, s2Max, maxPaddingS3, maxPaddingS4}
+		flat := [4]int{s1, s2, s3, s4}
+		for range 10 {
+			j, clash := collidingPair(flat)
+			if !clash {
+				return flat[0], flat[1], flat[2], flat[3]
+			}
+			flat[j] = stepAside(flat[j], ceilings[j])
+		}
+	}
+	return MinPadding, MinPadding + 1, MinPadding + 2, MinPadding + 3
+}
+
+// collidingPair finds the later of two message types whose on-the-wire
+// lengths meet, so the repair can step that one aside.
+func collidingPair(s [4]int) (j int, ok bool) {
+	lengths := paddedLengths(s[0], s[1], s[2], s[3])
+	for i := range lengths {
+		for j := i + 1; j < len(lengths); j++ {
+			if lengths[i] == lengths[j] {
+				return j, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// stepAside moves a padding one step away from a collision, downward at the
+// top of its window so it never walks out of the range Validate enforces.
+func stepAside(value, ceiling int) int {
+	if value >= ceiling {
+		return max(MinPadding, value-1)
+	}
+	return value + 1
+}
+
+// headerZones cannot overlap - so the four headers are always distinct -
+// and stay clear of 1-4, the plain WireGuard message types an observer reads
+// as "not obfuscated at all". Narrow on purpose: this app models one value
+// per header, and with RandomTrailers on a range would silently cost packets
+// the receiver drops.
+var headerZones = [4][2]int{
+	{100000000, 900000000},
+	{1200000000, 2000000000},
+	{2400000000, 3200000000},
+	{3600000000, 4000000000},
+}
+
+// drawHeaders rolls H1-H4, one value from each zone.
+func drawHeaders() (int, int, int, int) {
+	var h [4]int
+	for i, zone := range headerZones {
+		h[i] = min(zone[0]+randInt(0, zone[1]-zone[0]), MaxHeader)
+	}
+	return h[0], h[1], h[2], h[3]
+}
+
+// randInt is a uniform draw in [lo, hi] from the cryptographic source;
+// rejection sampling keeps it uniform, which a plain modulo would not. A
+// source failure panics like awg.RandomKey: predictable values would defeat
+// the generator.
+func randInt(lo, hi int) int {
 	if hi <= lo {
 		return lo
 	}
-	return rand.Intn(hi-lo+1) + lo //nolint:gosec
+	span := uint64(hi-lo) + 1
+	limit := ^uint64(0) - ^uint64(0)%span
+	for {
+		var buf [8]byte
+		mustRandom(buf[:])
+		if v := binary.LittleEndian.Uint64(buf[:]); v < limit {
+			return lo + int(v%span)
+		}
+	}
+}
+
+// randBytes is n bytes baked into a packet at generation time.
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	mustRandom(b)
+	return b
+}
+
+// randText is n characters of an alphabet, for the fields a protocol
+// constrains to hex digits or the like.
+func randText(alphabet string, n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[randInt(0, len(alphabet)-1)]
+	}
+	return b
+}
+
+func mustRandom(b []byte) {
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
 }

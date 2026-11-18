@@ -90,19 +90,25 @@ func TestCreateServer(t *testing.T) {
 		t.Errorf("S1 + 56 == S2 (%d, %d)", params.S1, params.S2)
 	}
 
-	// The shape the AmneziaWG docs recommend for header protection with random
-	// trailers: one padding for all four message types, headers left standard.
-	if params.S1 != params.S2 || params.S1 != params.S3 || params.S1 != params.S4 {
-		t.Errorf("paddings differ: S1..S4 = %d %d %d %d", params.S1, params.S2, params.S3, params.S4)
+	// The generated set is drawn fresh per server rather than taken from one
+	// shipped template: it validates in full, the four paddings are separate
+	// draws, and the headers stay clear of the plain WireGuard message types
+	// 1/2/3/4.
+	if problems := params.Validate(server.MTU); len(problems) > 0 {
+		t.Errorf("generated parameters do not validate: %v", problems)
 	}
-	if headers := []int{params.H1, params.H2, params.H3, params.H4}; !slices.Equal(headers, []int{1, 2, 3, 4}) {
-		t.Errorf("H1..H4 = %v, want [1 2 3 4]", headers)
+	if params.S1 == params.S2 && params.S2 == params.S3 && params.S3 == params.S4 {
+		t.Errorf("paddings repeat one value: S1..S4 = %d %d %d %d", params.S1, params.S2, params.S3, params.S4)
 	}
-
-	// And a full transport packet still fits a standard 1500-byte path: S4 rides
-	// on every one of them.
-	if size := server.MTU + 60 + params.S4; size > 1500 {
-		t.Errorf("mtu + 60 + S4 = %d, over 1500", size)
+	headers := map[int]bool{}
+	for _, h := range []int{params.H1, params.H2, params.H3, params.H4} {
+		if h <= 4 {
+			t.Errorf("header %d lands on a plain WireGuard message type", h)
+		}
+		if headers[h] {
+			t.Errorf("header %d is used twice", h)
+		}
+		headers[h] = true
 	}
 
 	time.Sleep(4 * time.Second)

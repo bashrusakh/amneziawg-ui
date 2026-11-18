@@ -250,9 +250,10 @@ func (f *Form) seedMTU() {
 	f.mtuSeed = strconv.Itoa(mtu)
 	f.mtu.SetText(f.mtuSeed)
 
-	padding, _, _, _ := api.RecommendedPaddings(mtu, false)
-	for _, entry := range []*widget.Entry{f.s1, f.s2, f.s3, f.s4} {
-		entry.SetText(strconv.Itoa(padding))
+	seed := api.GenerateObfuscation(mtu, false)
+	rolled := [4]int{seed.S1, seed.S2, seed.S3, seed.S4}
+	for i, entry := range []*widget.Entry{f.s1, f.s2, f.s3, f.s4} {
+		entry.SetText(strconv.Itoa(rolled[i]))
 	}
 }
 
@@ -300,24 +301,25 @@ func (f *Form) showObfuscation() {
 // numbers first, then the 3.1 switches, the header protection key and the
 // optional per-side timing knobs.
 func (f *Form) buildObfuscation() fyne.CanvasObject {
-	// The paddings start on a value the generator would pick for the MTU in
-	// the field above rather than on a fixed number, so opening the advanced
-	// mode and pressing Create straight away cannot hand out a padding too
-	// big for that MTU.
-	seed, _, _, _ := api.RecommendedPaddings(f.state.ServerMTU(), false)
-	padding := strconv.Itoa(seed)
+	// Every field starts on a value the shared generator just drew rather
+	// than on a fixed number: the template constants every deployment used
+	// to ship are exactly what an observer matches on.
+	seed := api.GenerateObfuscation(f.state.ServerMTU(), false)
+	number := func(value int, limits string) *widget.Entry {
+		return widgets.NumberEntry(strconv.Itoa(value), limits)
+	}
 
-	f.jc = widgets.NumberEntry("8", "1-65535")
-	f.jmin = widgets.NumberEntry("8", "1-65535")
-	f.jmax = widgets.NumberEntry("80", "1-65535")
-	f.s1 = widgets.NumberEntry(padding, "12-65535")
-	f.s2 = widgets.NumberEntry(padding, "12-65535")
-	f.s3 = widgets.NumberEntry(padding, "12-65535")
-	f.s4 = widgets.NumberEntry(padding, "12-65535")
-	f.h1 = widgets.NumberEntry("1", "1-4294967295")
-	f.h2 = widgets.NumberEntry("2", "1-4294967295")
-	f.h3 = widgets.NumberEntry("3", "1-4294967295")
-	f.h4 = widgets.NumberEntry("4", "1-4294967295")
+	f.jc = number(seed.Jc, "1-65535")
+	f.jmin = number(seed.Jmin, "1-65535")
+	f.jmax = number(seed.Jmax, "1-65535")
+	f.s1 = number(seed.S1, "12-65535")
+	f.s2 = number(seed.S2, "12-65535")
+	f.s3 = number(seed.S3, "12-65535")
+	f.s4 = number(seed.S4, "12-65535")
+	f.h1 = number(seed.H1, "1-4294967295")
+	f.h2 = number(seed.H2, "1-4294967295")
+	f.h3 = number(seed.H3, "1-4294967295")
+	f.h4 = number(seed.H4, "1-4294967295")
 
 	// Captions carry the recommended value, placeholders the accepted range:
 	// the range only matters once you are deliberately leaving the
@@ -340,6 +342,9 @@ func (f *Form) buildObfuscation() fyne.CanvasObject {
 		widgets.Labeled(lang.L("H4 (recommended 4)"), f.h4),
 	)
 	f.distinctPaddings = widget.NewCheck(lang.L("Roll S1-S4 separately instead of one value for all four"), nil)
+	// Separate draws are the default now; the box keeps "one value for all
+	// four" on offer for the operator who wants it deliberately.
+	f.distinctPaddings.SetChecked(true)
 
 	sizesNote := widgets.MutedNote(lang.L("At least 12 for each padding is the one hard rule here - header protection is always " +
 		"on in this app and takes its 12-byte nonce from the start of that padding. H1-H4 at 1/2/3/4 follows from the " +
@@ -403,13 +408,15 @@ func (f *Form) buildObfuscation() fyne.CanvasObject {
 	return container.NewPadded(widgets.Card(box))
 }
 
-// randomise rolls the packet-shaping numbers, leaving the fields the user is
-// more likely to have deliberately set (Jmin/Jmax, the switches, the timing
-// knobs) alone.
+// randomise rolls every packet-shaping number through the shared generator,
+// leaving the switches and the timing knobs alone. Unticking the box rolls
+// S1-S4 as one shared value instead of four draws.
 func (f *Form) randomise() {
-	p := api.GenerateObfuscation(f.mtuOrDefault(), f.distinctPaddings.Checked)
+	p := api.GenerateObfuscation(f.mtuOrDefault(), !f.distinctPaddings.Checked)
 
 	f.jc.SetText(strconv.Itoa(p.Jc))
+	f.jmin.SetText(strconv.Itoa(p.Jmin))
+	f.jmax.SetText(strconv.Itoa(p.Jmax))
 	f.s1.SetText(strconv.Itoa(p.S1))
 	f.s2.SetText(strconv.Itoa(p.S2))
 	f.s3.SetText(strconv.Itoa(p.S3))
@@ -572,8 +579,8 @@ func (f *Form) generated(name string, port int) api.CreateServerRequest {
 		DNS:       defaultDNS,
 		Endpoint:  "", // empty keeps clients on the auto-detected public IP
 		AutoStart: &autoStart,
-		// The simple mode has no switch to offer, so it takes the shape the
-		// AmneziaWG docs recommend: one padding for all four message types.
+		// The simple mode has no switch to offer, so it sends the generated
+		// default: four separate paddings, one per message type.
 		Obfuscation:       &obfuscation,
 		ObfuscationParams: api.GenerateObfuscation(mtu, false),
 	}

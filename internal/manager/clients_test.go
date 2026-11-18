@@ -11,6 +11,46 @@ import (
 	"amneziawg-web-ui/web-ui/api"
 )
 
+// The junk train and the signature chain are sent by the client alone, so
+// every client is issued its own; everything the receiver compares at the
+// other end of the tunnel stays exactly the server's.
+func TestAddClientIssuesItsOwnJunkTrainAndSignatureChain(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	server, _ := m.Server("s1")
+	var clients []api.Client
+	for i := range 10 {
+		client, _, err := m.AddClient("s1", api.AddClientRequest{Name: fmt.Sprintf("client-%d", i), ApplyISettings: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients = append(clients, *client)
+	}
+
+	shared := *server.ObfuscationParams
+	shared.Jc, shared.Jmin, shared.Jmax = 0, 0, 0
+	junk, chains := map[[3]int]bool{}, map[string]bool{}
+	for _, client := range clients {
+		got := *client.ObfuscationParams
+		got.Jc, got.Jmin, got.Jmax = 0, 0, 0
+		if got != shared {
+			t.Fatalf("a receiver-compared field changed for %s: %+v", client.Name, client.ObfuscationParams)
+		}
+		junk[[3]int{client.ObfuscationParams.Jc, client.ObfuscationParams.Jmin, client.ObfuscationParams.Jmax}] = true
+		chain := client.ISettings["i1"] + "|" + client.ISettings["i2"]
+		chains[chain] = true
+		if problems := api.ValidateISettings(client.ISettings); len(problems) > 0 {
+			t.Fatalf("%s got an invalid chain: %v", client.Name, problems)
+		}
+	}
+	if len(junk) < 2 {
+		t.Errorf("10 clients share one junk train: %v", junk)
+	}
+	if len(chains) < 2 {
+		t.Error("10 clients share one signature chain")
+	}
+}
+
 func TestAddClientDetachesObfuscationParamsFromTheServer(t *testing.T) {
 	m, _ := newTestManager(t)
 

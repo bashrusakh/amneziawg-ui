@@ -19,7 +19,6 @@ import (
 	"amneziawg-web-ui/internal/config"
 	"amneziawg-web-ui/internal/manager"
 	"amneziawg-web-ui/internal/store"
-	"amneziawg-web-ui/internal/wgconf"
 	"amneziawg-web-ui/web-ui/api"
 )
 
@@ -286,8 +285,13 @@ func TestResponsesMatchTheDeclaredPayloads(t *testing.T) {
 	if info.ID != "s1" || info.ClientsCount != 1 || len(info.Clients) != 1 {
 		t.Errorf("ServerInfo = %+v", info)
 	}
-	if info.DefaultISettings["i1"] != wgconf.DefaultI1 {
+	// The payload previews the chain a new client is issued: drawn fresh and
+	// valid, never one shipped blob shared by every deployment.
+	if info.DefaultISettings["i1"] == "" {
 		t.Errorf("default I-settings missing from ServerInfo")
+	}
+	if problems := api.ValidateISettings(info.DefaultISettings); len(problems) > 0 {
+		t.Errorf("default I-settings do not validate: %v", problems)
 	}
 	if info.Status != "stopped" {
 		t.Errorf("status = %q, want the observed stopped", info.Status)

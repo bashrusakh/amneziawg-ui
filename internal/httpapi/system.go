@@ -7,7 +7,6 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	"amneziawg-web-ui/internal/wgconf"
 	"amneziawg-web-ui/web-ui/api"
 )
 
@@ -27,7 +26,8 @@ func (h *Handlers) containerUptime(c fiber.Ctx) error {
 }
 
 func (h *Handlers) getDefaultISettings(c fiber.Ctx) error {
-	return c.JSON(wgconf.DefaultISettings())
+	// Drawn fresh per request: a preview of the chain a new client is issued.
+	return c.JSON(api.GenerateISettings())
 }
 
 func (h *Handlers) systemStatus(c fiber.Ctx) error {

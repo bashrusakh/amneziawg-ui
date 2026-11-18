@@ -218,7 +218,8 @@ func (m *Manager) addClientLocked(serverID, name string, req api.AddClientReques
 
 	iSettings := map[string]string{}
 	if req.ApplyISettings {
-		iSettings = wgconf.MergeISettings(req.ISettings)
+		// The client is issued its own chain; typed values override it per key.
+		iSettings = wgconf.MergeISettings(api.GenerateISettings(), req.ISettings)
 	}
 
 	newClient := api.Client{
@@ -233,7 +234,7 @@ func (m *Manager) addClientLocked(serverID, name string, req api.AddClientReques
 		PresharedKey:       psk,
 		ClientIP:           clientIP,
 		ObfuscationEnabled: srv.ObfuscationEnabled,
-		ObfuscationParams:  cloneObfuscationParams(srv.ObfuscationParams),
+		ObfuscationParams:  api.VaryForClient(srv.ObfuscationParams, srv.MTU),
 		ApplyISettings:     req.ApplyISettings,
 		ISettings:          iSettings,
 		AllowedIPs:         wgconf.AllowedIPsOrDefault(req.AllowedIPs),
@@ -342,7 +343,12 @@ func (m *Manager) UpdateClientISettings(serverID, clientID string, applyI *bool,
 			return
 		}
 		if client.ApplyISettings {
-			client.ISettings = wgconf.MergeISettings(client.ISettings, iSettings)
+			base := client.ISettings
+			if base["i1"] == "" {
+				// Turning I-settings on issues the client its own chain.
+				base = api.GenerateISettings()
+			}
+			client.ISettings = wgconf.MergeISettings(base, iSettings)
 		} else {
 			client.ISettings = map[string]string{}
 		}

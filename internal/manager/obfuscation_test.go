@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"amneziawg-web-ui/internal/wgconf"
 	"amneziawg-web-ui/web-ui/api"
 )
 
@@ -69,11 +68,13 @@ func TestValidateObfuscationParamsReportsSharedRules(t *testing.T) {
 	}
 }
 
-// The set a new client starts from has to satisfy the rules the app enforces
-// on everyone else.
-func TestDefaultISettingsAreValid(t *testing.T) {
-	if err := validateISettings(wgconf.DefaultISettings()); err != nil {
-		t.Fatalf("the built-in defaults do not validate: %v", err)
+// Every chain a client is issued has to satisfy the rules the app enforces
+// on hand-typed ones - there is no user input to blame a bad draw on.
+func TestGeneratedISettingsAreValid(t *testing.T) {
+	for range 50 {
+		if err := validateISettings(api.GenerateISettings()); err != nil {
+			t.Fatalf("the generated chain does not validate: %v", err)
+		}
 	}
 }
 
