@@ -80,7 +80,7 @@ func presentConfig(e *env.Env, info api.ServerInfo) {
 			rows = append(rows, [2]string{strings.ToUpper(key), value})
 		}
 		body.Add(widgets.InfoGrid(rows))
-		body.Add(widgets.MutedNote(lang.L("This is a fresh preview: with \"Apply I-settings\" on, every new client is issued a generated chain of its own.")))
+		body.Add(widgets.MutedNote(lang.L("Preview only - with \"Apply I-settings\" on, every new client gets its own generated chain.")))
 	}
 
 	full := widgets.NewButton(lang.L("View full config"), theme.DocumentIcon(), func() {
